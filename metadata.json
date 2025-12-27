@@ -1,0 +1,5 @@
+{
+  "name": "Enterprise AI User Portal",
+  "description": "A centralized portal for managing the lifecycle of enterprise AI agents, preventing Shadow AI, and ensuring compliance.",
+  "requestFramePermissions": []
+}

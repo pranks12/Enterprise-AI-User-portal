@@ -1,0 +1,170 @@
+
+import React, { useState } from 'react';
+import { MessageSquarePlus, ThumbsUp, Activity, ArrowRight, Lightbulb, Loader2, Info } from 'lucide-react';
+import { MOCK_AGENTS, MOCK_ENHANCEMENTS } from '../constants';
+import { analyzeEnhancement } from '../services/geminiService';
+import { EnhancementRequest } from '../types';
+
+const AgentEnhancement: React.FC = () => {
+  const [selectedAgentId, setSelectedAgentId] = useState(MOCK_AGENTS[0].id);
+  const [feedback, setFeedback] = useState('');
+  const [analysis, setAnalysis] = useState<any>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [requests, setRequests] = useState<EnhancementRequest[]>(MOCK_ENHANCEMENTS);
+
+  const selectedAgent = MOCK_AGENTS.find(a => a.id === selectedAgentId);
+  const agentRequests = requests.filter(r => r.agentId === selectedAgentId);
+
+  const handleAnalyzeFeedback = async () => {
+    if (!selectedAgent || !feedback) return;
+    setIsProcessing(true);
+    const result = await analyzeEnhancement(selectedAgent.name, feedback);
+    setAnalysis(result);
+    setIsProcessing(false);
+  };
+
+  const handleSubmit = () => {
+    if (!feedback || !selectedAgent || !analysis) return;
+    const newRequest: EnhancementRequest = {
+      id: `enh_${Date.now()}`,
+      agentId: selectedAgent.id,
+      requester: 'Current User',
+      description: feedback,
+      businessValue: analysis.businessValue,
+      upvotes: 1,
+      status: 'Submitted'
+    };
+    setRequests([...requests, newRequest]);
+    setFeedback('');
+    setAnalysis(null);
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 pb-20">
+      
+      <div className="lg:col-span-4 space-y-4">
+        <h2 className="text-xl font-bold text-slate-900 mb-4">Target Agent</h2>
+        <div className="space-y-2">
+          {MOCK_AGENTS.map(agent => (
+            <button
+              key={agent.id}
+              onClick={() => { setSelectedAgentId(agent.id); setAnalysis(null); }}
+              className={`w-full text-left p-4 rounded-xl transition-all border ${
+                selectedAgentId === agent.id 
+                  ? 'bg-blue-600 border-blue-700 shadow-lg text-white ring-2 ring-blue-300 ring-offset-2' 
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <h3 className="font-bold">{agent.name}</h3>
+              <p className={`text-[10px] uppercase font-bold mt-1 ${selectedAgentId === agent.id ? 'text-blue-100' : 'text-slate-400'}`}>
+                {agent.department}
+              </p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="lg:col-span-8 space-y-6">
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-2 bg-yellow-100 rounded-lg">
+              <Lightbulb className="w-6 h-6 text-yellow-600" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Request Enhancement</h2>
+              <p className="text-sm text-slate-500 italic">Advisory request for agent owners and Governance Portal.</p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder={`Suggest a feature or improvement for ${selectedAgent?.name}...`}
+              rows={4}
+              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-inner"
+            />
+            
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-1.5 text-slate-400">
+                 <Info className="w-4 h-4" />
+                 <span className="text-[10px] font-bold uppercase">Requests are reviewed periodically</span>
+              </div>
+              <button
+                onClick={handleAnalyzeFeedback}
+                disabled={!feedback || isProcessing}
+                className="bg-slate-900 hover:bg-slate-800 text-white px-6 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-lg"
+              >
+                {isProcessing ? <Loader2 className="animate-spin w-4 h-4" /> : 'Refine Proposal'}
+              </button>
+            </div>
+          </div>
+
+          {analysis && (
+            <div className="mt-8 bg-slate-900 text-white p-6 rounded-2xl animate-fadeIn shadow-2xl">
+              <div className="flex items-start gap-4">
+                <div className="p-2 bg-indigo-500 rounded-lg">
+                  <Activity className="w-5 h-5" />
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-bold text-xs text-indigo-300 uppercase tracking-widest mb-3">Enhancement Agent Report</h4>
+                  <div className="space-y-4 text-sm">
+                    <div>
+                      <span className="text-slate-400 block mb-1">Business Value:</span>
+                      <p className="text-white font-medium">{analysis.businessValue}</p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block mb-1">Impact Analysis:</span>
+                      <p className="text-white font-medium">{analysis.impactAnalysis}</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={handleSubmit}
+                    className="mt-8 w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl font-bold shadow-lg flex justify-center items-center gap-2 transition-all"
+                  >
+                    Post to Enhancement Board <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-lg font-bold text-slate-800 mb-4 px-1 flex items-center justify-between">
+            <span>Community Feedback Board</span>
+            <span className="text-xs text-slate-400 font-normal">{agentRequests.length} Requests</span>
+          </h3>
+          <div className="space-y-3">
+            {agentRequests.map(req => (
+              <div key={req.id} className="bg-white p-5 rounded-2xl border border-slate-200 flex items-start gap-5 hover:border-blue-200 transition-colors">
+                <div className="flex flex-col items-center gap-1">
+                   <button className="p-2 rounded-lg bg-slate-50 hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-all border border-slate-100">
+                     <ThumbsUp className="w-4 h-4" />
+                   </button>
+                   <span className="text-xs font-bold text-slate-700">{req.upvotes}</span>
+                </div>
+                <div className="flex-1">
+                  <p className="text-slate-900 font-bold mb-1">{req.description}</p>
+                  <p className="text-xs text-slate-500 mb-3">{req.businessValue}</p>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">By {req.requester}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                      req.status === 'Approved' ? 'bg-green-100 text-green-700' :
+                      req.status === 'Under Review' ? 'bg-blue-100 text-blue-700' :
+                      'bg-slate-100 text-slate-500'
+                    }`}>
+                      {req.status}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AgentEnhancement;
