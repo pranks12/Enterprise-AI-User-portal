@@ -1,17 +1,34 @@
 
 /**
  * Multi-Portal Architecture Configuration
- * These URLs point to the other portals in your ecosystem.
- * In production, these should be updated via environment variables in Cloudflare.
  */
 
-export const PORTAL_CONFIG = {
-  // The Governance Portal (Node.js/LangGraph)
-  governanceApiUrl: process.env.VITE_GOVERNANCE_API_URL || 'http://localhost:3000',
-  
-  // The Security Portal (Python/Django)
-  securityApiUrl: process.env.VITE_SECURITY_API_URL || 'http://localhost:3002',
+// Updated to verified credentials provided by user
+const DEFAULT_KEY = 'usr-key-2024-USER-def456';
+const DEFAULT_ID = 'user-portal';
 
-  // Current User Portal Public URL (for Webhooks)
-  userPortalUrl: process.env.VITE_USER_PORTAL_URL || 'http://localhost:3001',
+export const PORTAL_CONFIG = {
+  governanceApiUrl: 'https://delmgovernance.vsarangapany.com',
+  governanceEndpoint: '/api/portal/request',
+  statusEndpoint: '/api/approvals/',
+  
+  /**
+   * Strictly generates only the required headers.
+   * Ensures NO Content-Type or body headers are sent on GET requests to avoid 403 Forbidden.
+   */
+  getHeaders: (isPost: boolean = false) => {
+    const headers: Record<string, string> = {
+      'X-Portal-Key': DEFAULT_KEY,
+      'X-Portal-Id': DEFAULT_ID
+    };
+
+    if (isPost) {
+      headers['Content-Type'] = 'application/json';
+    }
+    
+    return headers;
+  },
+
+  securityApiUrl: 'https://securityportal.vsarangapany.com',
+  userPortalUrl: 'https://userportal.vsarangapany.com',
 };

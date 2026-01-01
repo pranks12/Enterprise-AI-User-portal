@@ -1,170 +1,374 @@
 
-import React, { useState } from 'react';
-import { Bot, Sparkles, AlertTriangle, Check, ArrowRight, Loader2, CheckCircle, Info, Clock, UserCheck, ShieldAlert } from 'lucide-react';
-import { analyzeIntakeRequest, submitToGovernancePortal } from '../services/geminiService';
-import { AgentStatus } from '../types';
+import React, { useState, useCallback, memo, useEffect, useRef } from 'react';
+import { 
+  Bot, Sparkles, AlertTriangle, Check, ArrowRight, Loader2, 
+  ShieldAlert, XCircle, ExternalLink, ChevronRight, Server, Activity, Clock, Terminal, ShieldCheck, RefreshCcw, Copy, Info, AlertCircle
+} from 'lucide-react';
+import { analyzeIntakeRequest, submitToGovernancePortal, getApprovalStatus } from '../services/geminiService';
+import { PORTAL_CONFIG } from '../config';
+
+// Stable Input Component
+const StableInput = memo(({ label, subLabel, value, onChange, placeholder, isTextArea = false }: any) => {
+  return (
+    <div className="flex flex-col gap-1.5 w-full">
+      <div className="flex flex-col">
+        <label className="text-sm font-bold text-slate-700">
+          {label}
+        </label>
+        {subLabel && (
+          <span className="text-[11px] text-slate-400 italic mb-1">
+            {subLabel}
+          </span>
+        )}
+      </div>
+      
+      {isTextArea ? (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          rows={3}
+          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-slate-800 placeholder:text-slate-300 text-sm"
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-slate-800 placeholder:text-slate-300 text-sm"
+        />
+      )}
+    </div>
+  );
+});
+
+StableInput.displayName = 'StableInput';
 
 const AgentIntake: React.FC = () => {
   const [formData, setFormData] = useState({
-    requestorName: 'Sarah Johnson',
-    requestorEmail: 'sarah@company.com',
-    requestorDept: 'Finance',
-    requestorManager: 'Alice Smith',
+    requestorEmail: 'priyanks@serv',
+    requestorDept: 'Engineering',
     agentName: '',
-    useCase: '',
+    purpose: '',
     description: '',
-    permissions: '',
-    dataAccess: '',
-    duration: '6 months',
-    externalAPIs: false,
-    systems: ''
   });
   
   const [analysis, setAnalysis] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [step, setStep] = useState(1);
+  const [pipelineStage, setPipelineStage] = useState<'encoding' | 'handshake' | 'registration'>('encoding');
   const [submittedRequest, setSubmittedRequest] = useState<any>(null);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const [liveResult, setLiveResult] = useState<any>(null);
+  
+  const pollingIntervalRef = useRef<any>(null);
+  const pollCountRef = useRef(0);
 
-  const handleAnalyze = async () => {
-    if (!formData.agentName || !formData.description) return;
-    setIsAnalyzing(true);
-    const result = await analyzeIntakeRequest(formData.agentName, formData.description, formData.useCase);
-    setAnalysis(result);
-    setIsAnalyzing(false);
-    if (result && !result.safetyTriggered && !result.isDuplicate) setStep(2);
+  const handleUpdate = useCallback((field: string, value: string) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  // Update history in localStorage
+  const updateSubmissionHistory = (id: string, name: string, status: string, details?: any) => {
+    const existing = JSON.parse(localStorage.getItem('user_portal_submissions') || '[]');
+    const index = existing.findIndex((e: any) => e.id === id);
+    
+    const entry = { 
+      id, 
+      agentName: name, 
+      timestamp: index >= 0 ? existing[index].timestamp : new Date().toISOString(), 
+      status: status,
+      message: details?.rejectionReason || details?.message,
+      admin: details?.admin
+    };
+
+    if (index >= 0) {
+      existing[index] = entry;
+    } else {
+      existing.unshift(entry);
+    }
+    
+    localStorage.setItem('user_portal_submissions', JSON.stringify(existing.slice(0, 20)));
   };
 
-  const handleFinalSubmit = async () => {
+  const handleCheckStatus = async (isAuto: boolean = false) => {
+    const id = submittedRequest?.approvalId || submittedRequest?.id;
+    if (!id) return;
+    
+    if (!isAuto) setIsCheckingStatus(true);
+    
+    try {
+      const result = await getApprovalStatus(id);
+      if (result) {
+        setLiveResult(result);
+        updateSubmissionHistory(id, formData.agentName, result.status, result);
+        
+        // If we reached a terminal state (approved or rejected), stop the auto-poll
+        if (result.status === 'APPROVED' || result.status === 'REJECTED') {
+          if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+        }
+      }
+    } catch (error: any) {
+      console.error("Async status check failed", error);
+    } finally {
+      if (!isAuto) setIsCheckingStatus(false);
+    }
+  };
+
+  // Start smart polling when the request is registered
+  useEffect(() => {
+    if (step === 3 && submittedRequest) {
+      // Poll every 10 seconds to catch early decisions
+      pollingIntervalRef.current = setInterval(() => {
+        pollCountRef.current += 1;
+        // Decaying/Stop policy: Stop auto-polling after 2 minutes
+        if (pollCountRef.current > 12) {
+          if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+          return;
+        }
+        handleCheckStatus(true);
+      }, 10000);
+    }
+
+    return () => {
+      if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+    };
+  }, [step, submittedRequest]);
+
+  const handleFinalSubmit = async (simulate: boolean = false) => {
     setIsSubmitting(true);
-    const result: any = await submitToGovernancePortal(formData);
-    setSubmittedRequest(result);
-    setIsSubmitting(false);
-    setStep(3);
+    setSubmitError(null);
+    setStep(4);
+    
+    setPipelineStage('encoding');
+    await new Promise(r => setTimeout(r, 700));
+    setPipelineStage('handshake');
+    
+    try {
+      const result = await submitToGovernancePortal(formData, analysis);
+      setPipelineStage('registration');
+      await new Promise(r => setTimeout(r, 800));
+      setSubmittedRequest(result);
+      updateSubmissionHistory(result.approvalId || result.id, formData.agentName, 'PENDING');
+      setStep(3);
+    } catch (error: any) {
+      setSubmitError(error.message);
+      setIsSubmitting(false);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const Field = ({ label, helper, children }: any) => (
-    <div className="space-y-1">
-      <label className="block text-sm font-bold text-slate-700">{label}</label>
-      <p className="text-xs text-slate-400 italic mb-2">{helper}</p>
-      {children}
-    </div>
-  );
-
-  return (
-    <div className="max-w-5xl mx-auto pb-20">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-slate-900 mb-2">Request New AI Agent</h1>
-        <p className="text-slate-500">User Portal orchestration. Requests are submitted to the Governance Portal for review.</p>
-      </div>
-
-      <div className="flex items-center mb-8 border-b border-slate-200 pb-4 overflow-x-auto">
-        {[1, 2, 3].map((s) => (
-          <div key={s} className="flex items-center flex-shrink-0">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-              step === s ? 'bg-blue-600 text-white shadow-lg' : step > s ? 'bg-green-500 text-white' : 'bg-slate-200 text-slate-500'
-            }`}>
-              {step > s ? <Check className="w-4 h-4" /> : s}
-            </div>
-            <span className={`ml-2 mr-6 text-sm font-bold ${step === s ? 'text-blue-900' : 'text-slate-500'}`}>
-              {s === 1 ? 'Definition' : s === 2 ? 'Validation' : 'Confirmation'}
-            </span>
+  if (step === 4) {
+    return (
+      <div className="max-w-4xl mx-auto py-8 animate-fadeIn">
+        <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
+          <div className="bg-[#0f172a] p-10 flex items-center justify-between">
+             <div>
+                <h2 className="text-2xl font-bold text-white mb-1">Deployment Pipeline</h2>
+                <p className="text-blue-400 text-sm font-medium flex items-center gap-2">
+                  <Activity className="w-4 h-4 animate-pulse" /> Initiating Asynchronous Review
+                </p>
+             </div>
           </div>
-        ))}
-      </div>
-
-      {step === 3 ? (
-        <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-10 text-center animate-fadeIn">
-          <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6 text-green-600">
-            <UserCheck className="w-10 h-10" />
-          </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-2">Request Successfully Orchestrated</h2>
-          <p className="text-slate-500 mb-8 max-w-md mx-auto">Your request has been sent to the <span className="font-bold text-slate-700">Governance Portal</span>.</p>
-          <div className="max-w-sm mx-auto bg-slate-50 rounded-xl p-6 border border-slate-200 text-left mb-8">
-            <div className="flex justify-between mb-2">
-              <span className="text-xs font-bold text-slate-400 uppercase">Request ID</span>
-              <span className="text-sm font-mono font-bold text-slate-900">{submittedRequest?.requestId}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-xs font-bold text-slate-400 uppercase">Status</span>
-              <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold uppercase">{submittedRequest?.status}</span>
-            </div>
-          </div>
-          <button onClick={() => {setStep(1); setAnalysis(null);}} className="text-blue-600 font-bold hover:underline">Submit Another Request</button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
-            <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <Field label="Requestor Name" helper="Governance identity check.">
-                  <input type="text" value={formData.requestorName} readOnly className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 outline-none" />
-                </Field>
-                <Field label="Department" helper="Cost center alignment.">
-                  <input type="text" value={formData.requestorDept} readOnly className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 outline-none" />
-                </Field>
-              </div>
-
-              <div className="space-y-6">
-                <Field label="Agent Name" helper="Short, descriptive name.">
-                  <input type="text" value={formData.agentName} onChange={e => setFormData({...formData, agentName: e.target.value})} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. Talent Scout AI" />
-                </Field>
-                <Field label="Use Case" helper="What specific problem is this solving?">
-                  <input type="text" value={formData.useCase} onChange={e => setFormData({...formData, useCase: e.target.value})} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Processing resumes..." />
-                </Field>
-                <Field label="Detailed Purpose" helper="ROI justification.">
-                  <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} rows={3} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Why do we need this?" />
-                </Field>
-              </div>
-
-              <div className="mt-8 flex justify-end">
-                <button onClick={handleAnalyze} disabled={isAnalyzing || !formData.agentName} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-bold transition-all disabled:opacity-50">
-                  {isAnalyzing ? <Loader2 className="animate-spin w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
-                  Validate Intake Request
-                </button>
-              </div>
-            </div>
-
-            {analysis && (
-              <div className={`p-6 rounded-xl border animate-fadeIn ${analysis.safetyTriggered ? 'bg-red-50 border-red-200' : analysis.isDuplicate ? 'bg-amber-50 border-amber-200' : 'bg-indigo-50 border-indigo-200'}`}>
-                <div className="flex items-start gap-4">
-                  {analysis.safetyTriggered ? <ShieldAlert className="text-red-600 w-6 h-6 mt-1" /> : analysis.isDuplicate ? <AlertTriangle className="text-amber-600 w-6 h-6 mt-1" /> : <CheckCircle className="text-indigo-600 w-6 h-6 mt-1" />}
-                  <div className="flex-1">
-                    <h4 className="text-lg font-bold">{analysis.safetyTriggered ? 'Security Guardrail' : analysis.isDuplicate ? 'Duplicate Found' : 'Validation Passed'}</h4>
-                    <p className="text-sm mt-1 text-slate-700">{analysis.analysis || analysis.duplicateReason}</p>
-                    {!analysis.isDuplicate && !analysis.safetyTriggered && (
-                       <div className="mt-6 p-4 bg-white rounded-lg border border-indigo-100">
-                          <p className="text-xs font-bold text-slate-400 uppercase mb-2">Refined Governance Justification</p>
-                          <p className="text-sm italic text-slate-700">"{analysis.refinedDescription}"</p>
-                          <div className="mt-6 flex justify-end">
-                             <button onClick={handleFinalSubmit} disabled={isSubmitting} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-all">
-                               {isSubmitting ? <Loader2 className="animate-spin w-4 h-4" /> : <><Check className="w-4 h-4" /> Submit to Governance API</>}
-                             </button>
-                          </div>
-                       </div>
-                    )}
+          <div className="p-10">
+            <div className="space-y-8">
+              {[
+                { id: 'encoding', label: 'Payload Preparation', desc: 'Encoding metadata for gateway validation.', icon: Terminal },
+                { id: 'handshake', label: 'Gateway Handshake', desc: `Handing over to Governance API`, icon: Server },
+                { id: 'registration', label: 'Request Registered', desc: 'Request is now in the governance queue.', icon: Clock }
+              ].map((stage, idx) => {
+                const isCurrent = pipelineStage === stage.id;
+                const isPast = (idx === 0 && pipelineStage !== 'encoding') || (idx === 1 && pipelineStage === 'registration');
+                const isFailed = submitError && stage.id === 'handshake';
+                return (
+                  <div key={stage.id} className="flex items-start gap-4">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border-2 transition-all ${
+                      isFailed ? 'bg-red-50 border-red-500 text-red-600' : isPast ? 'bg-green-50 border-green-500 text-green-600' :
+                      isCurrent ? 'bg-blue-50 border-blue-500 text-blue-600 shadow-lg shadow-blue-100' : 'bg-slate-50 border-slate-200 text-slate-300'
+                    }`}>
+                      {isFailed ? <XCircle className="w-6 h-6" /> : isPast ? <Check className="w-6 h-6" /> : <stage.icon className={`w-6 h-6 ${isCurrent ? 'animate-pulse' : ''}`} />}
+                    </div>
+                    <div>
+                      <h4 className={`font-bold ${isFailed ? 'text-red-600' : isCurrent ? 'text-blue-600' : 'text-slate-800'}`}>{stage.label}</h4>
+                      <p className="text-xs text-slate-500">{stage.desc}</p>
+                    </div>
+                  </div>
+                );
+              })}
+              {submitError && (
+                <div className="p-6 bg-red-50 border border-red-200 rounded-2xl space-y-4">
+                  <p className="text-sm text-red-600 font-medium">Gateway Error: {submitError}</p>
+                  <div className="flex gap-3">
+                    <button onClick={() => handleFinalSubmit(false)} className="bg-red-600 text-white px-5 py-2 rounded-xl text-xs font-bold">Retry Submission</button>
+                    <button onClick={() => setStep(1)} className="bg-slate-900 text-white px-5 py-2 rounded-xl text-xs font-bold">Go Back</button>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
-
-          <div className="lg:col-span-1">
-            <div className="bg-slate-900 text-white rounded-xl shadow-lg p-6 sticky top-24 border border-slate-700">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-blue-500 rounded-lg"><Bot className="w-6 h-6" /></div>
-                <div><h3 className="font-bold">Intake Orchestrator</h3><p className="text-xs text-blue-200">User Portal Agent</p></div>
-              </div>
-              <div className="text-sm text-slate-400 space-y-4">
-                <div className="p-3 bg-blue-900/30 rounded-lg border border-blue-800/50">
-                  <div className="flex items-center gap-2 text-blue-400 font-bold mb-1"><Info className="w-4 h-4" /> Architecture</div>
-                  <p className="text-[10px]">Requests are orchestrated from this Portal to the Governance Node via REST APIs.</p>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  if (step === 3) {
+    const status = liveResult?.status || 'PENDING';
+    const isApproved = status === 'APPROVED';
+    const isRejected = status === 'REJECTED';
+
+    return (
+      <div className="max-w-2xl mx-auto py-12 animate-fadeIn">
+        <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
+          <div className={`transition-colors duration-700 p-12 text-center ${
+            isRejected ? 'bg-red-900' : isApproved ? 'bg-green-800' : 'bg-[#0f172a]'
+          }`}>
+            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl transition-all ${
+              isRejected ? 'bg-red-500' : isApproved ? 'bg-green-500' : 'bg-blue-500 pulse'
+            }`}>
+              {isApproved ? <ShieldCheck className="w-8 h-8 text-white" /> : 
+               isRejected ? <AlertTriangle className="w-8 h-8 text-white" /> : 
+               <Clock className="w-8 h-8 text-white animate-pulse" />}
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">
+              {isRejected ? 'Governance Rejected' : isApproved ? 'Governance Approved' : 'Awaiting Review'}
+            </h2>
+            <p className="text-blue-100 text-sm opacity-80">
+              {isRejected ? 'The request did not meet corporate standards.' : 
+               isApproved ? 'Successfully registered and approved.' : 
+               'Request is being processed by the Governance Portal.'}
+            </p>
+          </div>
+          
+          <div className="p-10 space-y-6">
+            <div className={`p-6 rounded-2xl border transition-all ${
+              isRejected ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Request Tracking ID</span>
+                  <span className="font-mono font-bold text-xl text-slate-900">
+                    {submittedRequest?.approvalId || submittedRequest?.id}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Status</span>
+                  <span className={`text-xs font-black uppercase tracking-widest px-3 py-1 rounded-full ${
+                    isApproved ? 'bg-green-600 text-white' : 
+                    isRejected ? 'bg-red-600 text-white' : 
+                    'bg-blue-600 text-white animate-pulse'
+                  }`}>
+                    {status}
+                  </span>
+                </div>
+              </div>
+
+              {/* REJECTION REASON DISPLAY */}
+              {isRejected && (liveResult?.rejectionReason || liveResult?.message) && (
+                <div className="mt-6 p-4 bg-white border border-red-200 rounded-xl animate-fadeIn">
+                   <div className="flex gap-3">
+                      <XCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
+                      <div className="text-xs">
+                        <p className="font-black text-red-900 uppercase text-[9px] mb-1 tracking-wider">Reason for Rejection:</p>
+                        <p className="text-slate-700 leading-relaxed font-medium italic">
+                          "{liveResult.rejectionReason || liveResult.message}"
+                        </p>
+                        {liveResult.admin && (
+                          <p className="mt-3 text-[10px] font-bold text-slate-400">Decision by: {liveResult.admin}</p>
+                        )}
+                      </div>
+                   </div>
+                </div>
+              )}
+
+              {/* PENDING INFO */}
+              {!isApproved && !isRejected && (
+                <div className="mt-6 p-4 bg-blue-50 border border-blue-100 rounded-xl flex items-start gap-3">
+                  <Info className="w-5 h-5 text-blue-500 mt-0.5" />
+                  <p className="text-xs text-blue-800 leading-relaxed">
+                    This request is handled <strong>asynchronously</strong>. Automated checks are running now, but human review may take longer. You can safely close this page—the Dashboard will continue tracking this ID.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+               <button 
+                 onClick={() => handleCheckStatus(false)} 
+                 disabled={isCheckingStatus || isApproved || isRejected}
+                 className="py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold text-sm hover:bg-slate-200 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+               >
+                 {isCheckingStatus ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />}
+                 Check Now
+               </button>
+               <button 
+                 onClick={() => window.location.reload()} 
+                 className="py-4 bg-blue-600 text-white rounded-2xl font-bold text-sm hover:bg-blue-700 shadow-lg shadow-blue-100 transition-all"
+               >
+                 Go to Dashboard
+               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-10 animate-fadeIn">
+      <div>
+        <h1 className="text-4xl font-bold text-slate-900 mb-2">Request New AI Agent</h1>
+        <p className="text-sm text-slate-500">Intake orchestration for corporate AI governance.</p>
+      </div>
+      
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+        <div className="lg:col-span-8 bg-white p-10 rounded-2xl border border-slate-200 shadow-sm space-y-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <StableInput label="Requestor Email" value={formData.requestorEmail} onChange={(v:any) => handleUpdate('requestorEmail', v)} />
+            <StableInput label="Department" value={formData.requestorDept} onChange={(v:any) => handleUpdate('requestorDept', v)} />
+          </div>
+          
+          <StableInput label="Agent Name" value={formData.agentName} onChange={(v:any) => handleUpdate('agentName', v)} placeholder="e.g., FinanceAuditAgent" />
+          
+          <StableInput label="Agent Purpose" value={formData.purpose} onChange={(v:any) => handleUpdate('purpose', v)} placeholder="Primary business goal..." />
+          
+          <StableInput label="Business Justification" isTextArea value={formData.description} onChange={(v:any) => handleUpdate('description', v)} placeholder="Provide context for governance review..." />
+          
+          <div className="flex justify-end pt-4">
+            <button 
+              onClick={async () => {
+                if (!formData.agentName || !formData.purpose) return alert("Agent Name and Purpose are required.");
+                setIsAnalyzing(true);
+                const res = await analyzeIntakeRequest(formData.agentName, formData.description, formData.purpose);
+                setAnalysis(res);
+                setIsAnalyzing(false);
+                setStep(2);
+              }}
+              className="bg-blue-600 text-white px-12 py-4 rounded-xl font-bold shadow-xl flex items-center gap-2 hover:bg-blue-700 transition-colors"
+            >
+              {isAnalyzing ? <Loader2 className="animate-spin w-5 h-5" /> : <>Pre-Validate Intake <ChevronRight className="w-5 h-5" /></>}
+            </button>
+          </div>
+
+          {analysis && step === 2 && (
+            <div className="p-8 bg-blue-50 border-2 border-blue-200 rounded-2xl animate-fadeIn space-y-4 mt-8">
+              <div className="flex items-center gap-3 font-bold text-blue-900">
+                <Sparkles className="w-5 h-5" /> AI Pre-Analysis
+              </div>
+              <p className="text-sm text-blue-700 leading-relaxed">{analysis.analysis}</p>
+              <button 
+                onClick={() => handleFinalSubmit(false)} 
+                className="w-full bg-[#0f172a] text-white py-4 rounded-xl font-bold hover:bg-black transition-colors"
+              >
+                Submit for Governance Review
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

@@ -13,32 +13,146 @@ const validateInputContext = (input: string): boolean => {
 };
 
 /**
- * PRODUCTION NOTE: 
- * In a real environment, this function would wrap a fetch() call to PORTAL_CONFIG.governanceApiUrl
+ * Normalizes status strings from Governance Portal.
  */
-export const submitToGovernancePortal = async (payload: any) => {
-  console.log(`POSTing to ${PORTAL_CONFIG.governanceApiUrl}/api/requests`, payload);
-  // For demo/production readiness, we simulate the network delay
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        requestId: `REQ-${Math.floor(Math.random() * 100000)}`,
-        status: 'PENDING_GOVERNANCE',
-        riskScore: 5,
-        riskLevel: 'MEDIUM'
-      });
-    }, 1500);
-  });
+const normalizeStatus = (rawStatus: string): string => {
+  if (!rawStatus) return 'PENDING';
+  const s = rawStatus.toLowerCase().trim();
+  if (s === 'approved') return 'APPROVED';
+  if (s === 'rejected') return 'REJECTED';
+  return 'PENDING';
 };
 
-export const analyzeIntakeRequest = async (name: string, description: string, useCase: string) => {
-  if (!validateInputContext(name + description + useCase)) {
+/**
+ * Fetches status from GET API as suggested by verified snippet.
+ * Path: /api/approvals/{id}
+ */
+export const getApprovalStatus = async (approvalId: string) => {
+  try {
+    const response = await fetch(`${PORTAL_CONFIG.governanceApiUrl}/api/approvals/${approvalId}`, {
+      method: 'GET',
+      headers: {
+        'X-Portal-Key': 'usr-key-2024-USER-def456',
+        'X-Portal-Id': 'user-portal'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Governance fetch failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    // Strict mapping to the structure provided: data.approval
+    // Added approvedBy, rejectedBy, approvedAt, rejectedAt to satisfy Dashboard.tsx requirements
+    if (data && data.approval) {
+      return {
+        status: normalizeStatus(data.approval.status),
+        rejectionReason: data.approval.rejectionReason || data.approval.message || null,
+        message: data.approval.rejectionReason || data.approval.message || null,
+        admin: data.approval.rejectedBy || data.approval.approvedBy || null,
+        approvedBy: data.approval.approvedBy || null,
+        rejectedBy: data.approval.rejectedBy || null,
+        approvedAt: data.approval.approvedAt || null,
+        rejectedAt: data.approval.rejectedAt || null,
+        id: approvalId
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("[Governance API] GET Error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Sends a New Agent deployment request to the Governance Portal.
+ */
+export const submitToGovernancePortal = async (formData: any, aiAnalysis: any) => {
+  const payload = {
+    action: "deploy",
+    agentId: `agt_${Date.now()}`,
+    agentName: formData.agentName,
+    purpose: formData.purpose,
+    requestedBy: formData.requestorEmail,
+    department: formData.requestorDept,
+    description: formData.description,
+    aiAnalysis: aiAnalysis.analysis
+  };
+
+  try {
+    const response = await fetch(`${PORTAL_CONFIG.governanceApiUrl}${PORTAL_CONFIG.governanceEndpoint}`, {
+      method: 'POST',
+      headers: {
+        'X-Portal-Key': 'usr-key-2024-USER-def456',
+        'X-Portal-Id': 'user-portal',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `API Error: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("[Governance API] POST Error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Sends an Enhancement request to the Governance Portal.
+ */
+export const submitEnhancementToGovernancePortal = async (
+  agentName: string, 
+  requesterEmail: string, 
+  dept: string, 
+  feedback: string, 
+  aiAnalysis: any
+) => {
+  const payload = {
+    action: "enhance",
+    agentId: agentName.toLowerCase().replace(/\s+/g, '_'),
+    agentName: agentName,
+    purpose: `ENHANCEMENT: ${feedback}`,
+    requestedBy: requesterEmail,
+    department: dept
+  };
+
+  try {
+    const response = await fetch(`${PORTAL_CONFIG.governanceApiUrl}${PORTAL_CONFIG.governanceEndpoint}`, {
+      method: 'POST',
+      headers: {
+        'X-Portal-Key': 'usr-key-2024-USER-def456',
+        'X-Portal-Id': 'user-portal',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Governance API error: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Enhancement submission failed:", error);
+    throw error;
+  }
+};
+
+export const analyzeIntakeRequest = async (name: string, description: string, purpose: string) => {
+  if (!validateInputContext(name + description + purpose)) {
     return { safetyTriggered: true, analysis: "Security Guardrail: Potential prompt injection detected." };
   }
 
   try {
-    const catalogContext = JSON.stringify(MOCK_AGENTS.map(a => ({ name: a.name, useCase: a.useCase, description: a.description })));
-    const prompt = `Catalog: ${catalogContext}\nProposed: ${name}, ${useCase}, ${description}`;
+    const catalogContext = JSON.stringify(MOCK_AGENTS.map(a => ({ name: a.name, description: a.description })));
+    const prompt = `Catalog: ${catalogContext}\nProposed Name: ${name}\nPurpose: ${purpose}\nDetails: ${description}`;
 
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
